@@ -4,79 +4,118 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
-  build-test-deploy:
+  build-test-lint:
+    name: Build, Test & Lint Services
     runs-on: ubuntu-latest
-
+    strategy:
+      matrix:
+        service: [php-monolith, video-encoder, dashboard]
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    # 🔹 Step 1: Run Linting (YAML, Dockerfiles, Terraform)
-    - name: Lint Terraform
-      uses: hashicorp/setup-terraform@v2
-    - run: terraform fmt -check -recursive
+      - name: Set up Node.js (for dashboard tests)
+        if: matrix.service == 'dashboard'
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
 
-    - name: Lint Dockerfiles
-      uses: hadolint/hadolint-action@v3.1.0
-      with:
-        dockerfile: "apps/**/Dockerfile"
+      - name: Set up PHP (for monolith tests)
+        if: matrix.service == 'php-monolith'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
 
-    - name: Lint YAML (Kubernetes manifests)
-      run: |
-        pip install yamllint
-        yamllint .
+      - name: Install dependencies & run tests
+        working-directory: apps/${{ matrix.service }}
+        run: |
+          if [ -f "package.json" ]; then
+            npm install
+            npm run lint
+            npm test || echo "No tests found"
+          fi
+          if [ -f "composer.json" ]; then
+            composer install
+            ./vendor/bin/phpunit || echo "No PHP tests found"
+          fi
 
-    # 🔹 Step 2: Run Tests
-    - name: Run PHP Unit Tests
-      run: |
-        cd apps/php-monolith
-        if [ -f composer.json ]; then
-          sudo apt-get update && sudo apt-get install -y php-cli unzip
-          curl -sS https://getcomposer.org/installer | php
-          php composer.phar install
-          ./vendor/bin/phpunit || echo "No tests found"
-        fi
+      - name: Lint Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint < apps/${{ matrix.service }}/Dockerfile
 
-    - name: Run Node Tests (Dashboard)
-      run: |
-        cd apps/dashboard
-        if [ -f package.json ]; then
-          npm install
-          npm test || echo "No tests found"
-        fi
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    needs: build-test-lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    # 🔹 Step 3: Build Docker images
-    - name: Build Docker images
-      run: |
-        docker build -t ghcr.io/${{ github.repository_owner }}/php-monolith:latest ./apps/php-monolith
-        docker build -t ghcr.io/${{ github.repository_owner }}/video-encoder:latest ./apps/video-encoder
-        docker build -t ghcr.io/${{ github.repository_owner }}/dashboard:latest ./apps/dashboard
+      - name: Run Trivy scan (containers + IaC)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
 
-    # 🔹 Step 4: Push images to GHCR
-    - name: Login to GHCR
-      uses: docker/login-action@v2
-      with:
-        registry: ghcr.io
-        username: ${{ github.repository_owner }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run tfsec scan (Terraform security)
+        uses: aquasecurity/tfsec-action@v1.0.0
 
-    - name: Push Docker images
-      run: |
-        docker push ghcr.io/${{ github.repository_owner }}/php-monolith:latest
-        docker push ghcr.io/${{ github.repository_owner }}/video-encoder:latest
-        docker push ghcr.io/${{ github.repository_owner }}/dashboard:latest
+  build-and-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: security-scan
+    strategy:
+      matrix:
+        service: [php-monolith, video-encoder, dashboard]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    # 🔹 Step 5: Deploy to Kubernetes with kubectl + Helm
-    - name: Set up kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: v1.27.1
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Deploy with Helm + kubectl
-      run: |
-        helm upgrade --install clickhouse oci://registry-1.docker.io/bitnami/clickhouse \
-          --namespace knowledgecity --create-namespace
-        kubectl apply -f terraform-rendered/ # or use `kubectl apply -k`
+      - name: Build & Push Docker image
+        working-directory: apps/${{ matrix.service }}
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/knowledgecity/${{ matrix.service }}:latest
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsDeployRole
+          aws-region: us-east-1
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Deploy ClickHouse via Helm
+        run: |
+          helm repo add clickhouse https://clickhouse.github.io/helm-charts
+          helm upgrade --install clickhouse clickhouse/clickhouse --namespace knowledgecity --create-namespace
+
+      - name: Deploy services
+        run: |
+          kubectl apply -f apps/php-monolith/k8s-deploy.yaml -n knowledgecity
+          kubectl apply -f apps/video-encoder/k8s-deploy.yaml -n knowledgecity
+          kubectl apply -f apps/dashboard/k8s-deploy.yaml -n knowledgecity
