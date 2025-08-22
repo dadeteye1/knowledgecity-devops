@@ -1,0 +1,27 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build & Push Images
+        run: |
+          docker build -t php-monolith ./apps/php-monolith
+          docker build -t video-encoder ./apps/video-encoder
+          docker build -t dashboard ./apps/dashboard
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f apps/php-monolith/k8s-deploy.yaml
+          kubectl apply -f apps/video-encoder/k8s-deploy.yaml
+          kubectl apply -f apps/dashboard/k8s-deploy.yaml

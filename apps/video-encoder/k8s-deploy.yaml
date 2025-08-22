@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-encoder
+  namespace: knowledgecity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: video-encoder
+  template:
+    metadata:
+      labels:
+        app: video-encoder
+    spec:
+      containers:
+      - name: video-encoder
+        image: video-encoder:latest
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-encoder
+  namespace: knowledgecity
+spec:
+  selector:
+    app: video-encoder
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30082
+  type: NodePort
