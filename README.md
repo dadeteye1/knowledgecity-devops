@@ -76,7 +76,7 @@ The solution includes:
    - Services communicate internally via Cluster DNS.  
 
 4. **Observability (optional)**  
-   - Logs collected via Kubernetes logging stack.  
+   - Logs collected via prometheus.  
    - Metrics visualized in Grafana (future improvement).  
 
 ---
