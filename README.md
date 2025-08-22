@@ -73,7 +73,7 @@ The solution includes:
 3. **Kubernetes Deployment**  
    - Services (`php-monolith`, `video-encoder`, `dashboard`) deployed as pods.  
    - ClickHouse deployed via Helm chart.  
-   - Services communicate internally via Cluster DNS.  
+   - Services communicate internally via load balancer.  
 
 4. **Observability (optional)**  
    - Logs collected via prometheus.  
