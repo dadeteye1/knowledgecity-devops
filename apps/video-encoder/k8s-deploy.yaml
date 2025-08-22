@@ -1,29 +1,12 @@
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: knowledgecity
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: video-encoder-config
   namespace: knowledgecity
 data:
   ENCODE_PRESET: "fast"
-  ENCODE_CODEC: "libx264"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: video-encoder-pvc
-  namespace: knowledgecity
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
-  storageClassName: gp2 # for AWS EBS, change if GCP/Azure
+  ENCODE_FORMAT: "mp4"
+  OUTPUT_PATH: "/data/output"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -45,16 +28,12 @@ spec:
       containers:
       - name: video-encoder
         image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/knowledgecity/video-encoder:latest
-        command: ["/bin/bash", "-c"]
-        args: ["./encode.sh"]
-        ports:
-        - containerPort: 8080
+        command: ["/bin/bash", "-c", "/app/encode.sh"]
         envFrom:
         - configMapRef:
             name: video-encoder-config
-        volumeMounts:
-        - mountPath: /app/data
-          name: video-data
+        ports:
+        - containerPort: 8080
         resources:
           requests:
             cpu: "500m"
@@ -62,21 +41,12 @@ spec:
           limits:
             cpu: "2"
             memory: "2Gi"
-        readinessProbe:
-          exec:
-            command: ["test", "-f", "/app/encode.sh"]
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 15
-          periodSeconds: 20
+        volumeMounts:
+        - name: video-storage
+          mountPath: /data/output
       volumes:
-      - name: video-data
-        persistentVolumeClaim:
-          claimName: video-encoder-pvc
+      - name: video-storage
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -102,14 +72,14 @@ spec:
     kind: Deployment
     name: video-encoder
   minReplicas: 2
-  maxReplicas: 5
+  maxReplicas: 10
   metrics:
   - type: Resource
     resource:
       name: cpu
       target:
         type: Utilization
-        averageUtilization: 70
+        averageUtilization: 65
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -117,7 +87,7 @@ metadata:
   name: video-encoder-ingress
   namespace: knowledgecity
   annotations:
-    kubernetes.io/ingress.class: alb # change to nginx if needed
+    kubernetes.io/ingress.class: alb # or nginx
     alb.ingress.kubernetes.io/scheme: internet-facing
 spec:
   rules:
@@ -131,3 +101,25 @@ spec:
             name: video-encoder
             port:
               number: 8080
+---
+# Optional: batch encoding job template
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: video-encoder-job
+  namespace: knowledgecity
+spec:
+  template:
+    spec:
+      containers:
+      - name: video-encoder
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/knowledgecity/video-encoder:latest
+        command: ["/bin/bash", "-c", "/app/encode.sh /data/input/sample.mp4 /data/output/sample.mp4"]
+        volumeMounts:
+        - name: video-storage
+          mountPath: /data
+      restartPolicy: Never
+      volumes:
+      - name: video-storage
+        emptyDir: {}
+  backoffLimit: 2
