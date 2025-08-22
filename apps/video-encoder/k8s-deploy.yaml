@@ -1,10 +1,39 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knowledgecity
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: video-encoder-config
+  namespace: knowledgecity
+data:
+  ENCODE_PRESET: "fast"
+  ENCODE_CODEC: "libx264"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: video-encoder-pvc
+  namespace: knowledgecity
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: gp2 # for AWS EBS, change if GCP/Azure
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: video-encoder
   namespace: knowledgecity
+  labels:
+    app: video-encoder
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: video-encoder
@@ -15,7 +44,39 @@ spec:
     spec:
       containers:
       - name: video-encoder
-        image: video-encoder:latest
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/knowledgecity/video-encoder:latest
+        command: ["/bin/bash", "-c"]
+        args: ["./encode.sh"]
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: video-encoder-config
+        volumeMounts:
+        - mountPath: /app/data
+          name: video-data
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+        readinessProbe:
+          exec:
+            command: ["test", "-f", "/app/encode.sh"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: video-data
+        persistentVolumeClaim:
+          claimName: video-encoder-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -26,7 +87,47 @@ spec:
   selector:
     app: video-encoder
   ports:
-  - port: 80
-    targetPort: 80
-    nodePort: 30082
-  type: NodePort
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: video-encoder-hpa
+  namespace: knowledgecity
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: video-encoder
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: video-encoder-ingress
+  namespace: knowledgecity
+  annotations:
+    kubernetes.io/ingress.class: alb # change to nginx if needed
+    alb.ingress.kubernetes.io/scheme: internet-facing
+spec:
+  rules:
+  - host: encoder.knowledgecity.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: video-encoder
+            port:
+              number: 8080
