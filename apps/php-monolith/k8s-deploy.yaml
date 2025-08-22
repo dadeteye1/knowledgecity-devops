@@ -1,10 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knowledgecity
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: php-monolith-config
+  namespace: knowledgecity
+data:
+  APP_ENV: "production"
+  CLICKHOUSE_HOST: "clickhouse.knowledgecity.svc.cluster.local"
+  CLICKHOUSE_PORT: "8123"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: php-monolith-secrets
+  namespace: knowledgecity
+type: Opaque
+stringData:
+  CLICKHOUSE_USER: "default"
+  CLICKHOUSE_PASSWORD: ""
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: php-monolith
   namespace: knowledgecity
+  labels:
+    app: php-monolith
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: php-monolith
@@ -15,9 +42,33 @@ spec:
     spec:
       containers:
       - name: php-monolith
-        image: php-monolith:latest
+        image: <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/knowledgecity/php-monolith:latest
         ports:
         - containerPort: 80
+        envFrom:
+        - configMapRef:
+            name: php-monolith-config
+        - secretRef:
+            name: php-monolith-secrets
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
 ---
 apiVersion: v1
 kind: Service
@@ -28,7 +79,47 @@ spec:
   selector:
     app: php-monolith
   ports:
-  - port: 80
-    targetPort: 80
-    nodePort: 30081
-  type: NodePort
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: php-monolith-hpa
+  namespace: knowledgecity
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-monolith
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: php-monolith-ingress
+  namespace: knowledgecity
+  annotations:
+    kubernetes.io/ingress.class: alb # or nginx depending on ingress controller
+    alb.ingress.kubernetes.io/scheme: internet-facing
+spec:
+  rules:
+  - host: php.knowledgecity.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: php-monolith
+            port:
+              number: 80
