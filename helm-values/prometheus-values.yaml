@@ -1,0 +1,9 @@
+alertmanager:
+  enabled: true
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    scrapeInterval: 15s
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}

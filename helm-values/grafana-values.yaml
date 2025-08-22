@@ -1,0 +1,10 @@
+adminUser: admin
+adminPassword: supersecurepassword  # better: use Kubernetes Secret
+
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClassName: gp2
+
+service:
+  type: LoadBalancer
