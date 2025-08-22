@@ -181,5 +181,5 @@ Harden security with network policies and IAM roles.
 
 👨‍💻 Author
 
-dadeteye1
+David Adeteye
 Senior DevOps Engineer | Cloud & IaC Specialist
